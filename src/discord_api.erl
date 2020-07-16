@@ -56,7 +56,6 @@ handle_info({'DOWN', MRef, process, ConnPid, Reason},
     logger:error("discord api disconnected ~p~n", [Reason]),
     {stop, disconnected, S}.
 
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% helper functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

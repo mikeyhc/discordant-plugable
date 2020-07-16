@@ -4,7 +4,7 @@
 -export([start_link/1, heartbeat/1]).
 -export([callback_mode/0, init/1]).
 -export([await_connect/3, await_hello/3, await_dispatch/3, connected/3,
-         await_ack/3]).
+         await_ack/3, disconnected/3, await_reconnect/3]).
 
 -define(LIBRARY_NAME, <<"discordant">>).
 
@@ -45,42 +45,21 @@ callback_mode() ->
     state_functions.
 
 await_connect(cast, connect, State) ->
-    ApiServer = discordant_sup:get_api_server(),
-    BinGateway = discord_api:get_gateway(ApiServer),
-    "wss://" ++ Gateway = binary:bin_to_list(BinGateway),
-    logger:info("connecting to discord gateway"),
-    {ok, ConnPid} = gun:open(Gateway, 443, #{protocols => [http]}),
-    {ok, _Protocol} = gun:await_up(ConnPid),
-    MRef = monitor(process, ConnPid),
-    gun:ws_upgrade(ConnPid, "/"),
-    receive
-        {gun_upgrade, ConnPid, _StreamRef, [<<"websocket">>], _Headers} ->
-            {ok, Log} = file:open("events.log", [append, {encoding, unicode}]),
-            {next_state, await_hello,
-             State#state{url=Gateway,
-                         connection=#connection{pid=ConnPid, ref=MRef},
-                         log=Log}};
-        {gun_response, ConnPid, _StreamRef, _Fin, _Status, _Headers} ->
-            {stop, ws_upgrade_failed, State};
-        {gun_error, ConnPid, _StreamRef, Reason} ->
-            logger:error("gun error: ~p~n", [Reason]),
-            {stop, ws_upgrade_failed, State}
-    after 1000 -> {stop, timeout}
-    end.
+    connect(await_hello, State).
 
 await_hello(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
             S=#state{connection=#connection{pid=ConnPid}, token=Token}) ->
     Json = decode_msg(Msg, S),
     case Json of
         #{<<"op">> := 10} ->
-    logger:info("sending identify"),
-    send_message(ConnPid, 2, #{<<"token">> => Token,
-                               <<"properties">> => #{
-                                   <<"$os">> => <<"beam">>,
-                                   <<"$browser">> => ?LIBRARY_NAME,
-                                   <<"$device">> => ?LIBRARY_NAME
-                                  }
-                              }),
+            logger:info("sending identify"),
+            send_message(ConnPid, 2, #{<<"token">> => Token,
+                                       <<"properties">> => #{
+                                           <<"$os">> => <<"beam">>,
+                                           <<"$browser">> => ?LIBRARY_NAME,
+                                           <<"$device">> => ?LIBRARY_NAME
+                                          }
+                                      }),
             {next_state, await_dispatch, handle_ws_message(Json, S)};
         true ->
             {stop, msg_before_hello, S}
@@ -106,8 +85,11 @@ connected(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
     Json = jsone:decode(Msg),
     logger:debug("message recevied: ~p", [Json]),
     ok = file:write(Log, [Msg, "\n"]),
-    NewState = handle_ws_message(Json, S),
-    {keep_state, NewState}.
+    case Json of
+        #{<<"op">> := 7} ->
+            {next_state, disconnected, handle_ws_message(Json, S)};
+        _ -> {keep_state, handle_ws_message(Json, S)}
+    end.
 
 await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
           S=#state{connection=#connection{pid=ConnPid}}) ->
@@ -115,8 +97,27 @@ await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
     case Json of
         #{<<"op">> := 11} ->
             {next_state, connected, handle_ws_message(Json, S)};
-        true ->
-            {stop, msg_before_ack, S}
+        _ -> {stop, msg_before_ack, S}
+    end.
+
+disconnected(cast, reconnect, State) ->
+    connect(await_reconnect, State).
+
+await_reconnect(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
+                S=#state{connection=#connection{pid=ConnPid},
+                         token=Token,
+                         session_id=SessionId,
+                         sequence=Seq}) ->
+    Json = decode_msg(Msg, S),
+    case Json of
+        #{<<"op">> := 10} ->
+            logger:info("sending resume"),
+            send_message(ConnPid, 6, #{<<"token">> => Token,
+                                       <<"session_id">> => SessionId,
+                                       <<"seq">> => Seq
+                                      }),
+            {next_state, await_dispatch, handle_ws_message(Json, S)};
+        _ -> {stop, msg_before_hello, S}
     end.
 
 
@@ -140,6 +141,11 @@ handle_ws_message_(0, #{<<"d">> := #{<<"session_id">> := SessionId}}, State) ->
 handle_ws_message_(0, _Msg, State) ->
     % TODO delete this case
     State;
+handle_ws_message_(7, _Msg, State) ->
+    demonitor(State#state.connection#connection.ref),
+    ok = gun:shutdown(State#state.connection#connection.pid),
+    gen_statem:cast(self(), reconnect),
+    State#state{connection=undefined};
 handle_ws_message_(10, #{<<"d">> := #{<<"heartbeat_interval">> := IV}},
                    State) ->
     if State#state.heartbeat =:= undefined -> ok;
@@ -155,3 +161,27 @@ handle_ws_message_(11, _Msg, State) ->
 send_message(ConnPid, OpCode, Msg) ->
     gun:ws_send(ConnPid,
                 {text, jsone:encode(#{<<"op">> => OpCode, <<"d">> => Msg})}).
+
+connect(Next, State) ->
+    ApiServer = discordant_sup:get_api_server(),
+    BinGateway = discord_api:get_gateway(ApiServer),
+    "wss://" ++ Gateway = binary:bin_to_list(BinGateway),
+    logger:info("connecting to discord gateway"),
+    {ok, ConnPid} = gun:open(Gateway, 443, #{protocols => [http]}),
+    {ok, _Protocol} = gun:await_up(ConnPid),
+    MRef = monitor(process, ConnPid),
+    gun:ws_upgrade(ConnPid, "/"),
+    receive
+        {gun_upgrade, ConnPid, _StreamRef, [<<"websocket">>], _Headers} ->
+            {ok, Log} = file:open("events.log", [append, {encoding, unicode}]),
+            {next_state, Next,
+             State#state{url=Gateway,
+                         connection=#connection{pid=ConnPid, ref=MRef},
+                         log=Log}};
+        {gun_response, ConnPid, _StreamRef, _Fin, _Status, _Headers} ->
+            {stop, ws_upgrade_failed, State};
+        {gun_error, ConnPid, _StreamRef, Reason} ->
+            logger:error("gun error: ~p~n", [Reason]),
+            {stop, ws_upgrade_failed, State}
+    after 1000 -> {stop, timeout}
+    end.
