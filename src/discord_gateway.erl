@@ -4,7 +4,7 @@
 -export([start_link/1, heartbeat/1]).
 -export([callback_mode/0, init/1]).
 -export([await_connect/3, await_hello/3, await_dispatch/3, connected/3,
-         await_ack/3, disconnected/3, await_reconnect/3]).
+         await_ack/3, disconnected/3, await_reconnect/3, await_close/3]).
 
 -define(LIBRARY_NAME, <<"discordant">>).
 
@@ -14,10 +14,10 @@
 -record(state, { url :: string() | undefined,
                  token :: string(),
                  connection :: #connection{} | undefined,
-                 heartbeat :: reference() | undefined,
+                 heartbeat :: timer:tref() | undefined,
                  sequence :: integer() | undefined,
                  session_id :: binary() | undefined,
-                 log :: file:io_device()
+                 log :: file:io_device() | undefined
                }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -70,10 +70,20 @@ await_dispatch(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
     Json = decode_msg(Msg, S),
     case Json of
         #{<<"op">> := 0} ->
+            logger:info("connected to discord"),
             {next_state, connected, handle_ws_message(Json, S)};
-        true ->
-            {stop, msg_before_dispatch, S}
+        #{<<"op">> := 9} ->
+            logger:info("session invalidated, doing full connect"),
+            demonitor(S#state.connection#connection.ref),
+            gun:shutdown(ConnPid),
+            gen_statem:cast(self(), connect),
+            {next_state, await_close, #state{token=S#state.token}}
     end.
+
+await_close(info, {gun_ws, _ConnPid, _StreamRef, {close, _, _}}, State) ->
+    {next_state, await_connect, State};
+await_close(_, _, State) ->
+    {keep_state, State, [postpone]}.
 
 connected(cast, heartbeat,
           S=#state{connection=#connection{pid=Pid}, sequence=Seq}) ->
@@ -89,7 +99,11 @@ connected(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
         #{<<"op">> := 7} ->
             {next_state, disconnected, handle_ws_message(Json, S)};
         _ -> {keep_state, handle_ws_message(Json, S)}
-    end.
+    end;
+connected(info, {gun_down, ConnPid, _, _, _},
+          S=#state{connection=#connection{pid=ConnPid}}) ->
+    logger:info("gun connection lost"),
+    {keep_state, S}.
 
 await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
           S=#state{connection=#connection{pid=ConnPid}}) ->
@@ -101,8 +115,11 @@ await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
     end.
 
 disconnected(cast, reconnect, State) ->
+    logger:info("disconnected"),
     connect(await_reconnect, State).
 
+await_reconnect(info, {gun_ws, _ConnPid, _StreamRef, {close, _, _}}, State) ->
+    {keep_state, State};
 await_reconnect(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
                 S=#state{connection=#connection{pid=ConnPid},
                          token=Token,
@@ -134,13 +151,14 @@ decode_msg(Msg, #state{log=Log}) ->
 handle_ws_message(Msg=#{<<"op">> := Op, <<"s">> := Seq}, State) ->
     handle_ws_message_(Op, Msg, State#state{sequence=Seq}).
 
-handle_ws_message_(0, #{<<"d">> := #{<<"session_id">> := SessionId}}, State) ->
+handle_ws_message_(0, #{<<"d">> := Msg}, State) ->
     % TODO actually do things
     % TODO compare session ids
-    State#state{session_id=SessionId};
-handle_ws_message_(0, _Msg, State) ->
-    % TODO delete this case
-    State;
+    % TODO ensure we only use a single session ID
+    case maps:get(<<"session_id">>, Msg, undefined) of
+        undefined -> State;
+        SessionId -> State#state{session_id=SessionId}
+    end;
 handle_ws_message_(7, _Msg, State) ->
     demonitor(State#state.connection#connection.ref),
     ok = gun:shutdown(State#state.connection#connection.pid),
@@ -171,6 +189,7 @@ connect(Next, State) ->
     {ok, _Protocol} = gun:await_up(ConnPid),
     MRef = monitor(process, ConnPid),
     gun:ws_upgrade(ConnPid, "/"),
+    logger:info("connected to discord with pid ~p~n", [ConnPid]),
     receive
         {gun_upgrade, ConnPid, _StreamRef, [<<"websocket">>], _Headers} ->
             {ok, Log} = file:open("events.log", [append, {encoding, unicode}]),
