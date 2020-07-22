@@ -19,6 +19,6 @@
     discord_heartbeat
    ]},
 
-  {licenses, ["Apache 2.0"]},
+  {licenses, ["The Unlicense"]},
   {links, []}
  ]}.
