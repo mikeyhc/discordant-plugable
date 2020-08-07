@@ -103,6 +103,26 @@ connected(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
 connected(info, {gun_down, ConnPid, _, _, _},
           S=#state{connection=#connection{pid=ConnPid}}) ->
     logger:info("gun connection lost"),
+    gun:await_up(ConnPid),
+    logger:info("gun connection regained"),
+    gun:ws_upgrade(ConnPid, "/"),
+    logger:info("upgrading connection to websocket"),
+    receive
+        {gun_upgrade, ConnPid, _StreamRef, [<<"websocket">>], _Headers} ->
+            {keep_state, S};
+        {gun_response, ConnPid, _StreamRef, _Fin, _Status, _Headers} ->
+            {stop, ws_upgrade_failed, S};
+        {gun_error, ConnPid, _StreamRef, Reason} ->
+            logger:error("gun error: ~p~n", [Reason]),
+            {stop, ws_upgrade_failed, S}
+    after 2000 -> {stop, timeout}
+    end;
+connected(info, {gun_ws, ConnPid, _, {close, _, _}},
+          S=#state{connection=#connection{pid=ConnPid}}) ->
+    logger:info("websocket closed"),
+    {next_state, disconnected, S#state{connection=undefined}};
+connected(info, {gun_ws, ConnPid, _, {close, _, _}}, S) ->
+    logger:info("ignoring likely stale message for ~p", [ConnPid]),
     {keep_state, S}.
 
 await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
@@ -111,12 +131,22 @@ await_ack(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
     case Json of
         #{<<"op">> := 11} ->
             {next_state, connected, handle_ws_message(Json, S)};
-        _ -> {stop, msg_before_ack, S}
-    end.
+        _ -> {keep_state, S, [postpone]}
+    end;
+await_ack(info, {gun_ws, ConnPid, _, {close, _, _}},
+          S=#state{connection=#connection{pid=ConnPid}}) ->
+    logger:info("websocket closed"),
+    {next_state, disconnected, S#state{connection=undefined}};
+await_ack(cast, heartbeat, State) ->
+    logger:info("received heartbeat while awaiting ack, disconnecting"),
+    gen_statem:cast(self(), reconnect),
+    {next_state, disconnected, State#state{connection=undefined}}.
 
 disconnected(cast, reconnect, State) ->
     logger:info("disconnected"),
-    connect(await_reconnect, State).
+    connect(await_reconnect, State);
+disconnected(_, _, State) ->
+    {keep_state, State, [postpone]}.
 
 await_reconnect(info, {gun_ws, _ConnPid, _StreamRef, {close, _, _}}, State) ->
     {keep_state, State};
@@ -135,8 +165,9 @@ await_reconnect(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
                                       }),
             {next_state, await_dispatch, handle_ws_message(Json, S)};
         _ -> {stop, msg_before_hello, S}
-    end.
-
+    end;
+await_reconnect(_, _, State) ->
+    {keep_state, State, [postpone]}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% helper functions
@@ -173,7 +204,6 @@ handle_ws_message_(10, #{<<"d">> := #{<<"heartbeat_interval">> := IV}},
     State#state{heartbeat=Ref};
 handle_ws_message_(11, _Msg, State) ->
     logger:info("received heartbeat ack"),
-    % TODO make sure we receive an ack between heartbeats
     State.
 
 send_message(ConnPid, OpCode, Msg) ->
@@ -202,5 +232,5 @@ connect(Next, State) ->
         {gun_error, ConnPid, _StreamRef, Reason} ->
             logger:error("gun error: ~p~n", [Reason]),
             {stop, ws_upgrade_failed, State}
-    after 1000 -> {stop, timeout}
+    after 2000 -> {stop, timeout}
     end.

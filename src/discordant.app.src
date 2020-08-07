@@ -8,7 +8,8 @@
   {applications,
    [kernel,
     stdlib,
-    gun
+    gun,
+    chumak
    ]},
   {env,[]},
   {modules,
@@ -16,7 +17,8 @@
     discordant_sup,
     discord_gateway,
     discord_api,
-    discord_heartbeat
+    discord_heartbeat,
+    plugin_server
    ]},
 
   {licenses, ["The Unlicense"]},
