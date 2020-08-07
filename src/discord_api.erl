@@ -47,9 +47,11 @@ handle_cast(connect, S=#state{url=Url}) ->
     Conn = #connection{pid=ConnPid, ref=MRef},
     {noreply, S#state{connection=Conn}}.
 
-handle_info({gun_down, ConnPid, _, closed, _},
+handle_info({gun_down, ConnPid, _, _, _},
             S=#state{connection=#connection{pid=ConnPid}}) ->
-    % TODO debug log down message
+    logger:info("gun lost api connection"),
+    gun:await_up(ConnPid),
+    logger:info("gun regained api connection"),
     {noreply, S};
 handle_info({'DOWN', MRef, process, ConnPid, Reason},
             S=#state{connection=#connection{pid=ConnPid, ref=MRef}}) ->
