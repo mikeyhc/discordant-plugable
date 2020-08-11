@@ -78,7 +78,10 @@ await_dispatch(info, {gun_ws, ConnPid, _StreamRef, {text, Msg}},
             gun:shutdown(ConnPid),
             gen_statem:cast(self(), connect),
             {next_state, await_close, #state{token=S#state.token}}
-    end.
+    end;
+await_dispatch(info, {gun_ws, ConnPid, _StreamRef, {text, _Msg}}, S) ->
+    logger:info("dropping message for likely stale connection ~p", [ConnPid]),
+    {keep_state, S}.
 
 await_close(info, {gun_ws, _ConnPid, _StreamRef, {close, _, _}}, State) ->
     {next_state, await_connect, State};
