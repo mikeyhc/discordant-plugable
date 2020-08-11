@@ -32,7 +32,7 @@ jobs:
 
       - name: Run tests
         run: |
-          tree
+          find .
           if [ -f docker-compose.test.yml ]; then
             docker-compose --file docker-compose.test.yml build
             docker-compose --file docker-compose.test.yml run sut
