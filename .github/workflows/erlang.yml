@@ -24,6 +24,7 @@ jobs:
       run: rebar3 release
 
   test:
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
@@ -40,7 +41,6 @@ jobs:
 
   push:
     needs: test
-
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
