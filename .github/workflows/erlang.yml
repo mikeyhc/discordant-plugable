@@ -22,6 +22,7 @@ jobs:
       run: rebar3 compile
     - name: Release
       run: rebar3 release
+      # TODO cache release build
 
   test:
     needs: build

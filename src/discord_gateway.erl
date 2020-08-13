@@ -122,6 +122,7 @@ connected(info, {gun_down, ConnPid, _, _, _},
     end;
 connected(info, {gun_ws, ConnPid, _, {close, _, _}},
           S=#state{connection=#connection{pid=ConnPid}}) ->
+    gen_statem:cast(self(), reconnect),
     logger:info("websocket closed"),
     {next_state, disconnected, S#state{connection=undefined}};
 connected(info, {gun_ws, ConnPid, _, {close, _, _}}, S) ->

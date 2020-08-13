@@ -39,6 +39,8 @@ init({DiscordUrl, DiscordToken}) ->
     ChildSpecs = [#{id => discord_api,
                     start => {discord_api, start_link,
                               [DiscordUrl, DiscordToken]}},
+                  #{id => plugin_server,
+                    start => {plugin_server, start_link, []}},
                   #{id => discord_gateway,
                     start => {discord_gateway, start_link, [DiscordToken]}}
                  ],
