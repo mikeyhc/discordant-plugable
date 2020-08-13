@@ -17,13 +17,7 @@ main(Name) ->
             io:format("Unhandled reply for connect ~p \n", [Reply])
     end.
 
-send_messages(Socket, []) ->
-    send_messages(Socket, [
-                           <<"Hello my dear friend">>,
-                           <<"Hello my old friend">>,
-                           <<"Hello all the things">>
-                          ]);
-
+send_messages(_Socket, []) -> ok;
 send_messages(Socket, [Message|Messages]) ->
     case chumak:send(Socket, Message) of
         ok ->

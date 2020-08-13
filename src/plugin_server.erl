@@ -2,7 +2,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([init/1, handle_call/3, handle_cast/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(REP_PORT, 5554).
 -define(PUBLISH_PORT, 5555).
@@ -42,6 +42,11 @@ handle_cast(start_pair, State) ->
     Pid = spawn(fun() -> pair_to_cast(Self, Socket) end),
     MRef = monitor(process, Pid),
     {noreply, State#state{pair=Socket, pair_ref=MRef}}.
+
+handle_info({'DOWN', Ref, process, _Pid, _Reason},
+            State=#state{pair_ref=Ref}) ->
+    gen_server:cast(self(), start_pair),
+    {noreply, State#state{pair=undefined, pair_ref=undefined}}.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
