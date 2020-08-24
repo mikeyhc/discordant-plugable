@@ -79,7 +79,7 @@ receive_data(ConnPid, StreamRef, Acc) ->
         {gun_data, ConnPid, StreamRef, nofin, Data} ->
             receive_data(ConnPid, StreamRef, [Data|Acc]);
         {gun_data, ConnPid, StreamRef, fin, Data} ->
-            F= fun(X, A) -> <<X/binary, A/binary>> end,
+            F = fun(X, A) -> <<X/binary, A/binary>> end,
             lists:foldr(F, <<>>, [Data|Acc])
     after 1000 -> throw(timeout)
     end.

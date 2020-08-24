@@ -124,7 +124,7 @@ connected(info, {gun_ws, ConnPid, _, {close, _, _}},
           S=#state{connection=#connection{pid=ConnPid}}) ->
     logger:info("websocket closed"),
     {next_state, disconnected, S#state{connection=undefined}};
-connected(info, {gun_ws, ConnPid, _, {close, _, _}}, S) ->
+connected(info, {gun_ws, ConnPid, _, _}, S) ->
     logger:info("ignoring likely stale message for ~p", [ConnPid]),
     {keep_state, S}.
 
@@ -140,8 +140,9 @@ await_ack(info, {gun_ws, ConnPid, _, {close, _, _}},
           S=#state{connection=#connection{pid=ConnPid}}) ->
     logger:info("websocket closed"),
     {next_state, disconnected, S#state{connection=undefined}};
-await_ack(cast, heartbeat, State) ->
+await_ack(cast, heartbeat, State=#state{connection=Conn}) ->
     logger:info("received heartbeat while awaiting ack, disconnecting"),
+    disconnect(Conn, 1001, <<"no heartbeat">>),
     gen_statem:cast(self(), reconnect),
     {next_state, disconnected, State#state{connection=undefined}}.
 
@@ -194,8 +195,7 @@ handle_ws_message_(0, #{<<"d">> := Msg}, State) ->
         SessionId -> State#state{session_id=SessionId}
     end;
 handle_ws_message_(7, _Msg, State) ->
-    demonitor(State#state.connection#connection.ref),
-    ok = gun:shutdown(State#state.connection#connection.pid),
+    disconnect(State#state.connection, 1001, <<"reconnect">>),
     gen_statem:cast(self(), reconnect),
     State#state{connection=undefined};
 handle_ws_message_(10, #{<<"d">> := #{<<"heartbeat_interval">> := IV}},
@@ -213,6 +213,11 @@ send_message(ConnPid, OpCode, Msg) ->
     gun:ws_send(ConnPid,
                 {text, jsone:encode(#{<<"op">> => OpCode, <<"d">> => Msg})}).
 
+disconnect(#connection{pid=ConnPid, ref=MRef}, Code, Msg) ->
+    gun:ws_send(ConnPid, {close, Code, Msg}),
+    demonitor(MRef),
+    ok = gun:shutdown(ConnPid).
+
 connect(Next, State) ->
     ApiServer = discordant_sup:get_api_server(),
     BinGateway = discord_api:get_gateway(ApiServer),
@@ -221,7 +226,7 @@ connect(Next, State) ->
     {ok, ConnPid} = gun:open(Gateway, 443, #{protocols => [http]}),
     {ok, _Protocol} = gun:await_up(ConnPid),
     MRef = monitor(process, ConnPid),
-    gun:ws_upgrade(ConnPid, "/"),
+    gun:ws_upgrade(ConnPid, "/?v=6&encoding=json"),
     logger:info("connected to discord with pid ~p~n", [ConnPid]),
     receive
         {gun_upgrade, ConnPid, _StreamRef, [<<"websocket">>], _Headers} ->
